@@ -1,0 +1,8 @@
+__pycache__
+.ipynb_checkpoints/
+.pytest_cache
+mysigmoid.py
+myelu.py
+myleakyrelu.py
+myrelu.py
+tmp/

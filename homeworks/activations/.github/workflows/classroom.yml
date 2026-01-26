@@ -1,0 +1,43 @@
+name: Check Activations
+
+on: [push]
+
+jobs:
+  start-runner-internal:
+    uses: fintech-dl-hse/checkhw/.github/workflows/start-runner.yaml@main
+
+  run_autograding:
+    needs: [ "start-runner-internal" ]
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    name: Autograding
+    runs-on: self-hosted
+    outputs:
+      summary: ${{ steps.autograding.output.Points }}
+    steps:
+      - name: Checkout HW
+        uses: fintech-dl-hse/action-checkout-hw@main
+        with:
+          autograding-file: autograding-activations.json
+
+      - name: Extract MyReLu class
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_activations.ipynb" --class_definition "class MyReLU(nn.Module):" --out_filename "myrelu.py"
+
+      - name: Extract MyLeackyReLu class
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_activations.ipynb" --class_definition "class MyLeakyReLU(nn.Module):" --out_filename "myleakyrelu.py"
+
+      - name: Extract MySigmoid class
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_activations.ipynb" --class_definition "class MySigmoid(nn.Module):" --out_filename "mysigmoid.py"
+
+      - name: Extract MyELU class
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_activations.ipynb" --class_definition "class MyELU(nn.Module):" --out_filename "myelu.py"
+
+      - name: Autograding
+        id: autograding
+        uses: education/autograding@v1
+
+      - name: Print outputs
+        env:
+          MYOUTPUT: ${{ steps.autograding.outputs.Points }}
+        run: echo ${MYOUTPUT}
