@@ -1,0 +1,34 @@
+name: Check Autograd MLP
+
+on: [push]
+
+jobs:
+  start-runner-internal:
+    uses: fintech-dl-hse/checkhw/.github/workflows/start-runner.yaml@main
+
+  run_autograding:
+    needs: [ "start-runner-internal" ]
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    name: Autograding
+    runs-on: self-hosted
+    outputs:
+      summary: ${{ steps.autograding.output.Points }}
+    steps:
+      - name: Checkout HW
+        uses: fintech-dl-hse/action-checkout-hw@main
+        with:
+          autograding-file: autograding-mlp.json
+
+      - name: Extract Autograd MLP classes
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_mlp.ipynb" --class_definition "class Value:" --out_filename "my_autograd_mlp.py"
+
+      - name: Autograding
+        id: autograding
+        uses: education/autograding@v1
+
+      - name: Print outputs
+        env:
+          MYOUTPUT: ${{ steps.autograding.outputs.Points }}
+        run: echo ${MYOUTPUT}
