@@ -1,0 +1,33 @@
+name: Check BatchNorm DropOut
+
+on: [push]
+
+jobs:
+  start-runner-internal:
+    uses: fintech-dl-hse/checkhw/.github/workflows/start-runner.yaml@main
+
+  run_autograding:
+    needs: [ "start-runner-internal" ]
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    name: Autograding
+    runs-on: self-hosted
+    steps:
+      - name: Checkout HW
+        uses: fintech-dl-hse/action-checkout-hw@main
+        with:
+          autograding-file: autograding-dropout.json
+
+      - name: Extract dropout class
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_dropout.ipynb" --class_definition "class DropoutLayer(nn.Module):" --out_filename "dropout.py"
+
+      - name: Autograding
+        uses: education/autograding@v1
+
+      - name: Save dropout.py
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dropout.py
+          path: dropout.py
