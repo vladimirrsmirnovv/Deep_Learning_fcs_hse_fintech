@@ -19,10 +19,10 @@ jobs:
       - name: Checkout HW
         uses: fintech-dl-hse/action-checkout-hw@main
         with:
-          autograding-file: autograding-mlp.json
+          autograding-file: autograding-autograd-mlp.json
 
       - name: Extract Autograd MLP classes
-        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_mlp.ipynb" --class_definition "class Value:" --out_filename "my_autograd_mlp.py"
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_autograd_mlp.ipynb" --class_definition "class Value:" --out_filename "my_autograd_mlp.py"
 
       - name: Autograding
         id: autograding
