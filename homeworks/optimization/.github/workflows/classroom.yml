@@ -1,0 +1,26 @@
+name: Check Optimizers HW
+
+on: [push]
+
+jobs:
+  start-runner-internal:
+    uses: fintech-dl-hse/checkhw/.github/workflows/start-runner.yaml@main
+
+  run_autograding:
+    needs: [ "start-runner-internal" ]
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    name: Autograding
+    runs-on: self-hosted
+    steps:
+      - name: Checkout HW
+        uses: fintech-dl-hse/action-checkout-hw@main
+        with:
+          autograding-file: autograding-optimization.json
+
+      - name: Extract Optimizers class
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_optimization.ipynb" --class_definition "class MySGD():" --out_filename "myoptimizers.py"
+
+      - name: Autograding
+        uses: education/autograding@v1
