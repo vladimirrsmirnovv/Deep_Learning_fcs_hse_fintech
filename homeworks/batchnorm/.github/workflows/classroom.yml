@@ -1,0 +1,33 @@
+name: Check BatchNorm DropOut
+
+on: [push]
+
+jobs:
+  start-runner-internal:
+    uses: fintech-dl-hse/checkhw/.github/workflows/start-runner.yaml@main
+
+  run_autograding:
+    needs: [ "start-runner-internal" ]
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    name: Autograding
+    runs-on: self-hosted
+    steps:
+      - name: Checkout HW
+        uses: fintech-dl-hse/action-checkout-hw@main
+        with:
+          autograding-file: autograding-batchnorm.json
+
+      - name: Extract batchnorm2d class
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_batchnorm.ipynb" --class_definition "class BatchNorm2dLayer(nn.Module):" --out_filename "batchnorm2d.py"
+
+      - name: Autograding
+        uses: education/autograding@v1
+
+      - name: Save batchnorm2d.py
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: batchnorm2d.py
+          path: batchnorm2d.py
