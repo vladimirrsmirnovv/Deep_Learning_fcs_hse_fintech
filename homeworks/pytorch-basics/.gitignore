@@ -1,0 +1,13 @@
+__pycache__
+.ipynb_checkpoints/
+.pytest_cache
+predictions.csv
+*.pt
+MNIST/
+MNIST_image_folder/
+best_checkpoint.pth
+custom_cnn.py
+custom_mlp.py
+custom_resnet.py
+dataset_mnist.py
+tmp/

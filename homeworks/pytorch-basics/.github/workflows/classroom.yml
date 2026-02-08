@@ -1,0 +1,39 @@
+name: Check Pytorch Basics
+
+on: [push]
+
+jobs:
+  start-runner-internal:
+    uses: fintech-dl-hse/checkhw/.github/workflows/start-gpu-runner.yaml@main
+
+  run_autograding:
+    needs: [ "start-runner-internal" ]
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    name: Autograding
+    runs-on: self-hosted-gpu
+    steps:
+      - name: Checkout HW
+        uses: fintech-dl-hse/action-checkout-hw@main
+        with:
+          autograding-file: autograding-pytorch-basics.json
+
+      - name: Extract dataset_mnist.py
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_pytorch_basics.ipynb" --class_definition "class DatasetMNIST(Dataset):" --out_filename "dataset_mnist.py"
+
+      - name: Extract custom_mlp.py
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_pytorch_basics.ipynb" --class_definition "class CustomMLP(nn.Module)" --out_filename "custom_mlp.py"
+
+      - name: Extract custom_cnn.py
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_pytorch_basics.ipynb" --class_definition "class CustomCNN(nn.Module):" --out_filename "custom_cnn.py"
+
+      - name: Extract custom_resnet.py
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_pytorch_basics.ipynb" --class_definition "class CustomResNet(nn.Module):" --out_filename "custom_resnet.py"
+
+      - name: Autograding
+        uses: education/autograding@v1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf ./MNIST ./MNIST_image_folder
