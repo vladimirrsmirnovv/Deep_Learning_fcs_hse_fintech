@@ -12,7 +12,7 @@ jobs:
       group: ${{ github.repository }}
       cancel-in-progress: true
     name: Autograding
-    runs-on: self-hosted
+    runs-on: self-hosted-cpu
     outputs:
       summary: ${{ steps.autograding.output.Points }}
     steps:
