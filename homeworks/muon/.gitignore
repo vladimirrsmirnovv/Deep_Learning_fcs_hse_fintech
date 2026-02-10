@@ -1,0 +1,6 @@
+venv
+__pycache__
+*.pyc
+# Extracted modules (used by autograding)
+schulz_orthogonalize.py
+muon_optimizer.py

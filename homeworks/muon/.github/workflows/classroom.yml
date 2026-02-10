@@ -1,0 +1,56 @@
+# hw-muon: Newton–Schulz and Muon optimizer
+# Extract steps: schulz_orthogonalize, then Muon. Use self-hosted-cpu only.
+name: Check Muon
+
+on: [push]
+
+jobs:
+  start-runner-internal:
+    uses: fintech-dl-hse/checkhw/.github/workflows/start-runner.yaml@main
+
+  run_autograding:
+    needs: [ "start-runner-internal" ]
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    name: Autograding
+    runs-on: self-hosted-cpu
+    steps:
+      - name: Checkout HW
+        uses: fintech-dl-hse/action-checkout-hw@main
+        with:
+          autograding-file: autograding-muon.json
+
+      - name: Extract schulz_orthogonalize
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_muon.ipynb" --class_definition "def schulz_orthogonalize(" --out_filename "schulz_orthogonalize.py"
+
+      - name: Extract Muon optimizer
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_muon.ipynb" --class_definition "class Muon(torch.optim.Optimizer):" --out_filename "muon_optimizer.py"
+
+      - name: Autograding
+        uses: education/autograding@v1
+
+  create_feedback_issue:
+    needs: [run_autograding]
+    if: success()
+    name: Create feedback issue
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    outputs:
+      issue_number: ${{ steps.create.outputs.issue_number }}
+    steps:
+      - name: Create feedback issue
+        id: create
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const dateTime = new Date().toISOString().slice(0, 16).replace('T', ' ');
+            const title = `Feedback ${dateTime}`;
+            const { data: issue } = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body: 'To get review, write /review in the issue comment.',
+            });
+            core.setOutput('issue_number', issue.number);
