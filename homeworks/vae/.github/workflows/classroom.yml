@@ -1,0 +1,29 @@
+name: Check VAE
+
+on: [push]
+
+jobs:
+  start-runner-internal:
+    uses: fintech-dl-hse/checkhw/.github/workflows/start-runner.yaml@main
+
+  run_autograding:
+    needs: [ "start-runner-internal" ]
+    name: Autograding
+    runs-on: self-hosted-cpu
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout HW
+        uses: fintech-dl-hse/action-checkout-hw@main
+        with:
+          autograding-file: autograding-vae.json
+
+      - name: Extract VariationalAutoEncoder class
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_vae.ipynb" --class_definition "class VariationalAutoEncoder(nn.Module):" --out_filename "vae.py"
+
+      - name: Extract vae_loss
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_vae.ipynb" --class_definition "def vae_loss(" --out_filename "vae_loss.py"
+
+      - name: Autograding
+        uses: education/autograding@v1
