@@ -1,0 +1,37 @@
+name: Check Diffusion
+
+on: [push]
+
+jobs:
+  start-runner-internal:
+    uses: fintech-dl-hse/checkhw/.github/workflows/start-runner.yaml@main
+
+  run_autograding:
+    needs: [ "start-runner-internal" ]
+    name: Autograding
+    runs-on: self-hosted-cpu
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout HW
+        uses: fintech-dl-hse/action-checkout-hw@main
+        with:
+          autograding-file: autograding-diffusion.json
+
+      - name: Extract NoiseScheduler class
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_diffusion.ipynb" --class_definition "class NoiseScheduler():" --out_filename "noise_scheduler.py"
+
+      - name: Extract TransformerBlock class
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_diffusion.ipynb" --class_definition "class TransformerBlock(nn.Module):" --out_filename "transformer_block.py"
+
+      - name: Download Test Tensors
+        run: |
+          # noise scheduler test data
+          wget -q -O test_noise_scheduler_add_noise.pt https://storage.yandexcloud.net/fintech-dl-hse-hwdata/test_noise_scheduler_add_noise.pt
+          wget -q -O test_noise_scheduler_step.pt      https://storage.yandexcloud.net/fintech-dl-hse-hwdata/test_noise_scheduler_step.pt
+          # transformer block test data
+          wget -q -O test_transformer_block.pt https://storage.yandexcloud.net/fintech-dl-hse-hwdata/test_transformer_block.pt
+
+      - name: Autograding
+        uses: education/autograding@v1
