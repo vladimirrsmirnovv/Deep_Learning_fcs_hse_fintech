@@ -1,0 +1,31 @@
+name: Check Tokenization
+
+on: [push]
+
+jobs:
+  start-runner-internal:
+    uses: fintech-dl-hse/checkhw/.github/workflows/start-runner.yaml@main
+
+  run_autograding:
+    needs: [ "start-runner-internal" ]
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    name: Autograding
+    runs-on: self-hosted-cpu
+    outputs:
+      summary: ${{ steps.autograding.output.Points }}
+    steps:
+      - name: Checkout HW
+        uses: fintech-dl-hse/action-checkout-hw@main
+        with:
+          autograding-file: autograding-tokenization.json
+
+      - name: Autograding
+        id: autograding
+        uses: education/autograding@v1
+
+      - name: Print outputs
+        env:
+          MYOUTPUT: ${{ steps.autograding.outputs.Points }}
+        run: echo ${MYOUTPUT}
