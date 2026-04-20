@@ -1,0 +1,46 @@
+name: Check Rnn Attention
+
+on: [push]
+
+jobs:
+  start-runner-internal:
+    uses: fintech-dl-hse/checkhw/.github/workflows/start-runner.yaml@main
+
+  run_autograding:
+    needs: [ "start-runner-internal" ]
+    name: Autograding
+    runs-on: self-hosted-cpu
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout HW
+        uses: fintech-dl-hse/action-checkout-hw@main
+        with:
+          autograding-file: autograding-rnn-attention.json
+
+      - name: Extract RNN Attention Class
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_rnn_attention.ipynb" --class_definition "class Seq2SeqRNNAttention(PreTrainedModel):" --out_filename "rnn_attention.py"
+
+      - name: rm commited rnn_tokenizer rnn_attention_model
+        run: rm -rf rnn_tokenizer rnn_attention_model
+
+      - name: Extract RNN Tokenizer
+        run: unzip rnn_tokenizer.zip
+
+      - name: Extract RNN Attention Model
+        run: unzip rnn_attention_model.zip
+
+      - name: Autograding
+        uses: education/autograding@v1
+
+      - name: rm big files
+        if: always()
+        run: rm -rf rnn_attention_model.zip rnn_tokenizer.zip rnn_tokenizer rnn_attention_model
+
+      - name: RNN Attention Class
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rnn_attention.py
+          path: rnn_attention.py
