@@ -1,0 +1,46 @@
+name: Check Transformer Attention
+
+on: [push]
+
+jobs:
+  start-runner-internal:
+    uses: fintech-dl-hse/checkhw/.github/workflows/start-runner.yaml@main
+
+  run_autograding:
+    needs: [ "start-runner-internal" ]
+    name: Autograding
+    runs-on: self-hosted-cpu
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout HW
+        uses: fintech-dl-hse/action-checkout-hw@main
+        with:
+          autograding-file: autograding-transformer-attention.json
+
+      - name: Extract transformer Attention Class
+        run: /data/bin/miniconda3/envs/jupyter-actions/bin/python scripts/extract_class_from_notebook.py --notebook "hw_transformer_attention.ipynb" --class_definition "class Seq2SeqTransformerAttention(PreTrainedModel):" --out_filename "transformer_attention.py"
+
+      - name: rm commited transformer_attention_tokenizer transformer_attention_model
+        run: rm -rf transformer_attention_tokenizer transformer_attention_model
+
+      - name: Extract transformer Tokenizer
+        run: unzip transformer_attention_tokenizer.zip
+
+      - name: Extract transformer Attention Model
+        run: unzip transformer_attention_model.zip
+
+      - name: Autograding
+        uses: education/autograding@v1
+
+      - name: rm big files
+        if: always()
+        run: rm -rf transformer_attention_model.zip transformer_attention_tokenizer.zip transformer_attention_tokenizer transformer_attention_model
+
+      - name: transformer Attention Class
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transformer_attention.py
+          path: transformer_attention.py
