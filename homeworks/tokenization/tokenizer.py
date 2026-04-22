@@ -59,13 +59,19 @@ class BPETokenizer():
         """
         pairs = Counter()
 
-        # TODO your code here
-        raise NotImplementedError('Not implemented')
+        for word in subwords:
+            for i in range(len(word) - 1):
+                pairs[(word[i], word[i + 1])] += 1
 
         return pairs
 
-
-    def _perform_merge(self, pairs: Counter, subwords: List[List[str]], new_token: str, best_pair: tuple[str, str]) -> List[List[str]]:
+    def _perform_merge(
+        self,
+        pairs: Counter,
+        subwords: List[List[str]],
+        new_token: str,
+        best_pair: tuple[str, str]
+    ) -> List[List[str]]:
         """
         Merge the most frequent pair in all subwords and update pair statistics.
 
@@ -79,27 +85,27 @@ class BPETokenizer():
             Tuple of (updated pairs counter, updated subwords list)
         """
 
-        # Note, there are two ways to implement this function:
-        # 1. Calculate `new_subwords` and update `pairs` Counter on the fly
-        #    This way is harder to implement, but more efficient
-        # 2. Calculate `new_subwords` and calculate `pairs` from `new_subwords`
-        #    This way much more computationally expensive, but simple
-
-
-        # 1. Hard way
-        new_pairs = pairs
-        # Easy way
+        # Easy way: rebuild pair stats after merge
         new_pairs = Counter()
-
-
-        # Update subwords by merging the best pair
         new_subwords = []
 
-        # TODO your code here
-        raise NotImplementedError('Not implemented')
+        a, b = best_pair
+
+        for word in subwords:
+            merged_word = []
+            i = 0
+            while i < len(word):
+                if i < len(word) - 1 and word[i] == a and word[i + 1] == b:
+                    merged_word.append(new_token)
+                    i += 2
+                else:
+                    merged_word.append(word[i])
+                    i += 1
+            new_subwords.append(merged_word)
+
+        new_pairs = self._get_stats(new_subwords)
 
         return new_pairs, new_subwords
-
 
     def fit(self, text_corpus: List[str]) -> Counter:
         """
@@ -117,10 +123,14 @@ class BPETokenizer():
         Returns:
             Counter object containing the vocabulary with frequencies
         """
+        self.vocab = Counter()
+        self.merges = {}
+        self._token_to_id = None
+        self._id_to_token = None
+
         # Initialize vocabulary with characters, not bytes
         subwords = []
         for text in text_corpus:
-            # Split text into characters
             subword = list(text)
             subwords.append(subword)
             self.vocab.update(subword)
@@ -129,18 +139,35 @@ class BPETokenizer():
         self.vocab[self.unk] = 1
         self.vocab[self.pad] = 1
 
-        # Calculate how many merges we need to reach target vocab size
+        # Calculate how many merges we need to reach target vocabulary size
         num_merges = self.vocab_size - len(self.vocab)
+        if num_merges <= 0:
+            return self.vocab
 
         # Calculate initial statistics
         pairs = self._get_stats(subwords)
 
-        # Perform merges until we reach target vocab size
-        # Update self.vocab, self.merges
-        ## TODO: Consider using `pairs.most_common(1)` method
-        ## TODO: Consider using `self._perform_merge`
+        # Perform merges until we reach target vocabulary size
         for i in range(num_merges):
-            raise NotImplementedError('Not implemented')
+            if not pairs:
+                break
+
+            best_pair, freq = pairs.most_common(1)[0]
+            if freq <= 0:
+                break
+
+            new_token = ''.join(best_pair)
+
+            # Save merge rank: smaller rank = earlier merge = higher priority
+            self.merges[best_pair] = i
+            self.vocab[new_token] = freq
+
+            pairs, subwords = self._perform_merge(
+                pairs=pairs,
+                subwords=subwords,
+                new_token=new_token,
+                best_pair=best_pair,
+            )
 
         return self.vocab
 
@@ -165,28 +192,40 @@ class BPETokenizer():
         if not self.merges:
             raise ValueError("Tokenizer must be fitted before tokenization")
 
+        if text == "":
+            return []
+
         # Initialize with individual characters
         subwords = list(text)
 
-        # Calculate initial statistics
-        pairs = self._get_stats([subwords])
-
-        # Apply merges iteratively
         while True:
-            # Find the best pair to merge based on our learned merges
+            if len(subwords) < 2:
+                break
+
+            # Calculate current adjacent pairs
+            pairs = self._get_stats([subwords])
+
+            # Find the best pair to merge based on learned merge order
             best_pair = None
-            best_score = -1
+            best_rank = float('inf')
 
-            # TODO your code here
-            raise NotImplementedError('Not implemented')
+            for pair in pairs:
+                if pair in self.merges and self.merges[pair] < best_rank:
+                    best_rank = self.merges[pair]
+                    best_pair = pair
 
-            # If we don't have any valid pairs in our merges, we're done
-            # TODO: YOUR code here
-            raise NotImplementedError('Not implemented')
+            # If no valid pair found, stop
+            if best_pair is None:
+                break
 
-            # Perform merge
-            # TODO: Consider using `self._perform_merge`
-            raise NotImplementedError('Not implemented')
+            new_token = ''.join(best_pair)
+            _, merged_subwords = self._perform_merge(
+                pairs=pairs,
+                subwords=[subwords],
+                new_token=new_token,
+                best_pair=best_pair,
+            )
+            subwords = merged_subwords[0]
 
         # Replace unknown tokens with UNK
         return [t if t in self.vocab else self.unk for t in subwords]
