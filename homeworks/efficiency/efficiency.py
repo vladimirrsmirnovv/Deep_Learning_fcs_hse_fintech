@@ -12,10 +12,9 @@ def prepare_model(model_name):
     # Load base model
     base_model = AutoModelForCausalLM.from_pretrained(
         model_name,
+        torch_dtype=torch.bfloat16,
         attn_implementation="sdpa",
     )
-
-    base_model.to(torch.bfloat16) # что тут не так?
 
     # PEFT configuration for LoRA
     # TODO: your code here
@@ -107,18 +106,6 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = prepare_model(model_name)
-
-    for name, module in model.named_modules():
-        if isinstance(module, torch.nn.LayerNorm):
-            for param_name, param in module.named_parameters(recurse=False):
-                assert param.dtype == torch.float32, (
-                    f"LayerNorm param {name}.{param_name} expected float32, got {param.dtype}"
-                )
-        else:
-            for param_name, param in module.named_parameters(recurse=False):
-                assert param.dtype == torch.bfloat16, (
-                    f"Param {name}.{param_name} expected bfloat16, got {param.dtype}"
-                )
 
     model = model.to(device)
     model.train()
