@@ -86,7 +86,7 @@ def prepare_dataloader(dataset, tokenizer):
     # 1. GPT-2 context window = 1024.
     # 2. padding="max_length" стабилизирует shape.
     # 3. Это помогает torch.compile не перекомпилировать граф.
-    max_length = 1024
+    max_length = 512
 
     def tokenize_function(examples):
         return tokenizer(
@@ -119,7 +119,7 @@ def prepare_dataloader(dataset, tokenizer):
     )
 
     # 6000 / 16 = 375, все батчи одинакового размера.
-    batch_size = 16
+    batch_size = 24
 
     train_dataloader = DataLoader(
         tokenized_dataset,
@@ -173,7 +173,7 @@ def train_model(model, train_dataloader, optimizer, num_epochs, device):
     # Внешний main создаёт AdamW с lr=1e-4.
     # Для одного epoch LoRA это слишком мало.
     # Поэтому используем более агрессивный lr.
-    effective_lr = 5e-3
+    effective_lr = 8e-3
 
     if device.type == "cuda":
         try:
