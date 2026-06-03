@@ -100,7 +100,8 @@ def prepare_dataloader(dataset, tokenizer):
     # GPT-2 context window = 1024.
     # Важно использовать padding="max_length", иначе batch shapes будут разные,
     # и torch.compile будет тратить время на recompilation.
-    max_length = 1024
+    max_length = 512
+
 
     def tokenize_function(examples):
         return tokenizer(
@@ -134,7 +135,7 @@ def prepare_dataloader(dataset, tokenizer):
 
     # 6000 / 16 = 375, то есть последнего неполного батча не будет.
     # Это важно для torch.compile: batch dimension тоже остаётся стабильной.
-    batch_size = 16
+    batch_size = 24
 
     train_dataloader = DataLoader(
         tokenized_dataset,
