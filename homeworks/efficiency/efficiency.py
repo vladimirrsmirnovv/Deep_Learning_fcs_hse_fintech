@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 def prepare_model(model_name):
     # ------------------------------------------------------------
-    # 1. Выбираем dtype
+    # 1. dtype
     # ------------------------------------------------------------
     if torch.cuda.is_available():
         if torch.cuda.is_bf16_supported():
@@ -22,7 +22,7 @@ def prepare_model(model_name):
         dtype = torch.float32
 
     # ------------------------------------------------------------
-    # 2. Общие ускорения matmul
+    # 2. GPU matmul optimizations
     # ------------------------------------------------------------
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -31,39 +31,43 @@ def prepare_model(model_name):
     torch.set_float32_matmul_precision("high")
 
     # ------------------------------------------------------------
-    # 3. Загружаем GPT-2
+    # 3. Load GPT-2
     # ------------------------------------------------------------
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=dtype,
-        attn_implementation="sdpa",
-    )
+    # В новых transformers вместо torch_dtype предпочтительнее dtype.
+    try:
+        base_model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            dtype=dtype,
+            attn_implementation="sdpa",
+        )
+    except TypeError:
+        base_model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            attn_implementation="sdpa",
+        )
 
-    # Для обучения cache не нужен.
     base_model.config.use_cache = False
 
     # ------------------------------------------------------------
-    # 4. LoRA config
+    # 4. LoRA
     # ------------------------------------------------------------
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         inference_mode=False,
 
-        # Более сильный LoRA, чем r=8.
-        # Нужно успеть снизить loss за один проход.
+        # Достаточно сильный LoRA, но не слишком тяжелый.
         r=16,
         lora_alpha=32,
         lora_dropout=0.0,
 
-        # GPT-2 modules:
-        # c_attn — QKV projection,
-        # c_proj — output projection,
+        # GPT-2 Conv1D modules:
+        # c_attn — attention QKV projection,
+        # c_proj — attention/MLP output projection,
         # c_fc — MLP projection.
         target_modules=["c_attn", "c_proj", "c_fc"],
 
-        # GPT-2 использует transformers Conv1D.
         fan_in_fan_out=True,
-
         bias="none",
     )
 
@@ -73,20 +77,16 @@ def prepare_model(model_name):
 
 
 def prepare_dataloader(dataset, tokenizer):
-    # ------------------------------------------------------------
-    # 1. Берём train split
-    # ------------------------------------------------------------
     train_dataset = dataset["train"]
     text_column = "text"
 
     # ------------------------------------------------------------
-    # 2. Фиксированный max_length
+    # Компромисс:
+    # 512 слишком мало по loss,
+    # 1024 слишком долго,
+    # 896 должно дать больше "лёгкого" контекста/padding, но быстрее 1024.
     # ------------------------------------------------------------
-    # Важно:
-    # 1. GPT-2 context window = 1024.
-    # 2. padding="max_length" стабилизирует shape.
-    # 3. Это помогает torch.compile не перекомпилировать граф.
-    max_length = 768
+    max_length = 896
 
     def tokenize_function(examples):
         return tokenizer(
@@ -110,16 +110,15 @@ def prepare_dataloader(dataset, tokenizer):
         columns=["input_ids", "attention_mask"],
     )
 
-    # Collator оставляем по условию задачи.
-    # Но в train_model для loss будем использовать labels=input_ids,
-    # как в исходном шаблоне.
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
         mlm=False,
     )
 
-    # 6000 / 16 = 375, все батчи одинакового размера.
-    batch_size = 16
+    # 6000 / 12 = 500.
+    # Больше optimizer updates, чем при batch_size=16.
+    # При этом batch не такой тяжёлый, как 16/20 на длинном контексте.
+    batch_size = 12
 
     train_dataloader = DataLoader(
         tokenized_dataset,
@@ -137,12 +136,10 @@ def prepare_dataloader(dataset, tokenizer):
 
 def train_model(model, train_dataloader, optimizer, num_epochs, device):
     # ------------------------------------------------------------
-    # Что делает эта строка?
+    # Matmul precision
     # ------------------------------------------------------------
-    # torch.set_float32_matmul_precision("high") разрешает PyTorch
-    # использовать более быстрые режимы матричного умножения float32.
-    # На NVIDIA Ampere+ это часто включает TF32.
-    # Это ускоряет matmul с небольшой допустимой потерей точности.
+    # torch.set_float32_matmul_precision("high") разрешает более быстрые
+    # режимы float32 matmul, включая TF32 на Ampere+ GPU.
     torch.set_float32_matmul_precision("high")
 
     if device.type == "cuda":
@@ -150,10 +147,8 @@ def train_model(model, train_dataloader, optimizer, num_epochs, device):
         torch.backends.cudnn.allow_tf32 = True
 
     # ------------------------------------------------------------
-    # 1. torch.compile
+    # torch.compile после model.to(device)
     # ------------------------------------------------------------
-    # Compile делаем здесь, потому что main уже успел сделать model.to(device).
-    # Важно, что dataloader выдаёт фиксированные shapes.
     if device.type == "cuda" and hasattr(torch, "compile"):
         try:
             model = torch.compile(
@@ -166,14 +161,14 @@ def train_model(model, train_dataloader, optimizer, num_epochs, device):
             print(f"torch.compile skipped: {e}")
 
     # ------------------------------------------------------------
-    # 2. Пересобираем optimizer только на trainable LoRA-параметры
+    # Optimizer только на trainable LoRA-параметры
     # ------------------------------------------------------------
     trainable_params = [p for p in model.parameters() if p.requires_grad]
 
-    # Внешний main создаёт AdamW с lr=1e-4.
-    # Для одного epoch LoRA это слишком мало.
-    # Поэтому используем более агрессивный lr.
-    effective_lr = 6e-3
+    # Внешний main даёт lr=1e-4, для одного прохода это слишком мало.
+    # Но постоянный высокий LR даёт скачки loss ближе к концу.
+    # Поэтому: высокий старт + cosine decay.
+    effective_lr = 5e-3
 
     if device.type == "cuda":
         try:
@@ -202,8 +197,16 @@ def train_model(model, train_dataloader, optimizer, num_epochs, device):
             weight_decay=0.0,
         )
 
+    total_steps = len(train_dataloader) * num_epochs
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=total_steps,
+        eta_min=2e-4,
+    )
+
     # ------------------------------------------------------------
-    # 3. AMP dtype
+    # AMP
     # ------------------------------------------------------------
     use_amp = device.type == "cuda"
 
@@ -229,7 +232,7 @@ def train_model(model, train_dataloader, optimizer, num_epochs, device):
     total_loss = 0.0
 
     # ------------------------------------------------------------
-    # 4. Training loop
+    # Training loop
     # ------------------------------------------------------------
     for epoch in range(num_epochs):
         progress_bar = tqdm(
@@ -253,10 +256,10 @@ def train_model(model, train_dataloader, optimizer, num_epochs, device):
                         input_ids=input_ids,
                         attention_mask=attention_mask,
 
-                        # Важно:
-                        # не используем batch["labels"] из DataCollator,
-                        # потому что там padding заменяется на -100.
-                        # Исходный шаблон считает loss по labels=input_ids.
+                        # Оставляем как в исходном шаблоне:
+                        # loss считается по input_ids.
+                        # batch["labels"] от collator маскирует padding через -100,
+                        # а это в этой задаче даёт более высокий loss.
                         labels=input_ids,
                     )
                     loss = outputs.loss
@@ -279,8 +282,11 @@ def train_model(model, train_dataloader, optimizer, num_epochs, device):
                 torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
                 optimizer.step()
 
+            scheduler.step()
+
             # .item() синхронизирует CPU и GPU.
-            # Поэтому делаем это редко, как в исходном шаблоне.
+            # Оставляем каждые 10 итераций, чтобы логика moving average
+            # была близка к исходному шаблону.
             if i % 10 == 0:
                 loss_item = loss.detach().float().item()
                 total_loss = total_loss * 0.8 + loss_item * 0.2
@@ -301,8 +307,8 @@ if __name__ == "__main__":
     os.environ["WANDB_DISABLED"] = "true"
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-    # Load tokenizer and model
     model_name = "gpt2"
+
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
 
@@ -314,7 +320,6 @@ if __name__ == "__main__":
 
     train_dataloader = prepare_dataloader(dataset, tokenizer)
 
-    # Move model to device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = prepare_model(model_name)
@@ -322,10 +327,8 @@ if __name__ == "__main__":
     model = model.to(device)
     model.train()
 
-    # Optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
-    # Training loop
     num_epochs = 1
     moving_avg_loss = train_model(
         model,
