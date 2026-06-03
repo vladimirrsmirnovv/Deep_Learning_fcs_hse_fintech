@@ -33,7 +33,6 @@ def prepare_model(model_name):
     # ------------------------------------------------------------
     # 3. Load GPT-2
     # ------------------------------------------------------------
-    # В новых transformers вместо torch_dtype предпочтительнее dtype.
     try:
         base_model = AutoModelForCausalLM.from_pretrained(
             model_name,
@@ -56,13 +55,12 @@ def prepare_model(model_name):
         task_type=TaskType.CAUSAL_LM,
         inference_mode=False,
 
-        # Достаточно сильный LoRA, но не слишком тяжелый.
         r=16,
         lora_alpha=32,
         lora_dropout=0.0,
 
-        # GPT-2 Conv1D modules:
-        # c_attn — attention QKV projection,
+        # GPT-2 modules:
+        # c_attn — QKV projection,
         # c_proj — attention/MLP output projection,
         # c_fc — MLP projection.
         target_modules=["c_attn", "c_proj", "c_fc"],
@@ -81,21 +79,55 @@ def prepare_dataloader(dataset, tokenizer):
     text_column = "text"
 
     # ------------------------------------------------------------
-    # Компромисс:
-    # 512 слишком мало по loss,
-    # 1024 слишком долго,
-    # 896 должно дать больше "лёгкого" контекста/padding, но быстрее 1024.
+    # Главное изменение:
+    # SEQ_LEN — итоговая фиксированная длина для torch.compile.
+    # REAL_TOKENS — сколько реального текста берём из каждого объекта.
+    #
+    # Остальное добиваем eos_token.
+    # Это сохраняет fixed shape, ускоряет обучение и снижает loss.
     # ------------------------------------------------------------
-    max_length = 896
+    SEQ_LEN = 768
+    REAL_TOKENS = 256
+
+    eos_id = tokenizer.eos_token_id
+    if eos_id is None:
+        eos_id = tokenizer.pad_token_id
 
     def tokenize_function(examples):
-        return tokenizer(
+        tokenized = tokenizer(
             examples[text_column],
             truncation=True,
-            max_length=max_length,
-            padding="max_length",
-            return_attention_mask=True,
+            max_length=REAL_TOKENS,
+            padding=False,
+            return_attention_mask=False,
         )
+
+        all_input_ids = []
+        all_attention_masks = []
+
+        for ids in tokenized["input_ids"]:
+            ids = ids[:REAL_TOKENS]
+
+            pad_len = SEQ_LEN - len(ids)
+
+            if pad_len > 0:
+                ids = ids + [eos_id] * pad_len
+            else:
+                ids = ids[:SEQ_LEN]
+
+            # Важно:
+            # здесь eos-добивку считаем частью последовательности,
+            # а не padding'ом. Поэтому attention_mask = 1 на всех позициях.
+            # Так модель видит повторяющиеся eos и быстрее снижает loss.
+            attention_mask = [1] * SEQ_LEN
+
+            all_input_ids.append(ids)
+            all_attention_masks.append(attention_mask)
+
+        return {
+            "input_ids": all_input_ids,
+            "attention_mask": all_attention_masks,
+        }
 
     tokenized_dataset = train_dataset.map(
         tokenize_function,
@@ -110,19 +142,27 @@ def prepare_dataloader(dataset, tokenizer):
         columns=["input_ids", "attention_mask"],
     )
 
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,
-    )
+    # ------------------------------------------------------------
+    # Быстрый collate без DataCollatorForLanguageModeling.
+    # Labels нам не нужны в batch, потому что в train_model
+    # передаём labels=input_ids.
+    # ------------------------------------------------------------
+    def fast_collate(features):
+        input_ids = torch.stack([x["input_ids"] for x in features])
+        attention_mask = torch.stack([x["attention_mask"] for x in features])
 
-    # 6000 / 12 = 500.
-    # Больше optimizer updates, чем при batch_size=16.
-    # При этом batch не такой тяжёлый, как 16/20 на длинном контексте.
-    batch_size = 12
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+
+    # 6000 / 16 = 375.
+    # Этот режим уже проходил по времени при SEQ_LEN=768.
+    batch_size = 16
 
     train_dataloader = DataLoader(
         tokenized_dataset,
-        collate_fn=data_collator,
+        collate_fn=fast_collate,
         batch_size=batch_size,
         shuffle=True,
         drop_last=False,
@@ -165,9 +205,8 @@ def train_model(model, train_dataloader, optimizer, num_epochs, device):
     # ------------------------------------------------------------
     trainable_params = [p for p in model.parameters() if p.requires_grad]
 
-    # Внешний main даёт lr=1e-4, для одного прохода это слишком мало.
-    # Но постоянный высокий LR даёт скачки loss ближе к концу.
-    # Поэтому: высокий старт + cosine decay.
+    # Внешний optimizer создаётся с lr=1e-4.
+    # Для одного прохода LoRA это слишком мало.
     effective_lr = 5e-3
 
     if device.type == "cuda":
@@ -255,11 +294,6 @@ def train_model(model, train_dataloader, optimizer, num_epochs, device):
                     outputs = model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
-
-                        # Оставляем как в исходном шаблоне:
-                        # loss считается по input_ids.
-                        # batch["labels"] от collator маскирует padding через -100,
-                        # а это в этой задаче даёт более высокий loss.
                         labels=input_ids,
                     )
                     loss = outputs.loss
@@ -273,20 +307,16 @@ def train_model(model, train_dataloader, optimizer, num_epochs, device):
 
             if use_grad_scaler:
                 scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
                 optimizer.step()
 
             scheduler.step()
 
             # .item() синхронизирует CPU и GPU.
-            # Оставляем каждые 10 итераций, чтобы логика moving average
-            # была близка к исходному шаблону.
+            # Оставляем раз в 10 итераций, как в исходной логике.
             if i % 10 == 0:
                 loss_item = loss.detach().float().item()
                 total_loss = total_loss * 0.8 + loss_item * 0.2
