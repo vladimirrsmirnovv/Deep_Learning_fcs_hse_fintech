@@ -42,38 +42,29 @@ class FileTools:
         """
         if path is None:
             path = ""
-        if not isinstance(path, str):
-            raise ValueError("path must be a string")
 
-        # os.path.join специально оставлен совместимым с абсолютными путями:
-        # если модель/тест передаст absolute path внутри workdir, он будет принят,
-        # а любой выход наружу будет отфильтрован через commonpath.
+        if not isinstance(path, str):
+            raise ValueError("путь должен быть строкой")
+
         candidate = os.path.realpath(os.path.join(self.workdir, path))
         if os.path.commonpath([self.workdir, candidate]) != self.workdir:
-            raise ValueError(f"path escapes workdir: {path}")
+            raise ValueError(f"путь выходит за пределы рабочей директории: {path}")
+
         return candidate
 
     def read_file(self, path: str, offset: int = 0, limit: int | None = None) -> str:
-        """Прочитать файл и вернуть его содержимое С НОМЕРАМИ СТРОК.
-
-        Args:
-            path: путь к файлу относительно workdir.
-            offset: с какой строки начать (0-based).
-            limit: сколько строк вернуть (None — до конца).
-
-        Returns:
-            Строки в формате "{номер}\\t{текст}" (нумерация с 1), либо текст ошибки
-            (файл не найден / выход за песочницу).
-        """
+        """Прочитать файл и вернуть его содержимое С НОМЕРАМИ СТРОК."""
         try:
             safe = self._safe_path(path)
+
             offset = 0 if offset is None else int(offset)
             if offset < 0:
-                return "ERROR: offset must be non-negative"
+                return "Ошибка: offset должен быть неотрицательным"
+
             if limit is not None:
                 limit = int(limit)
                 if limit < 0:
-                    return "ERROR: limit must be non-negative"
+                    return "Ошибка: limit должен быть неотрицательным"
 
             with open(safe, "r", encoding="utf-8", errors="replace") as f:
                 lines = f.read().splitlines()
@@ -83,116 +74,114 @@ class FileTools:
                 f"{line_no}\t{line}"
                 for line_no, line in enumerate(selected, start=offset + 1)
             )
+
         except FileNotFoundError:
-            return f"ERROR: file not found: {path}"
+            return f"Ошибка: файл не найден: {path}"
         except IsADirectoryError:
-            return f"ERROR: path is a directory: {path}"
+            return f"Ошибка: путь указывает на директорию: {path}"
         except ValueError as exc:
-            return f"ERROR: {exc}"
+            return f"Ошибка: {exc}"
         except OSError as exc:
-            return f"ERROR: could not read {path}: {exc}"
+            return f"Ошибка: не удалось прочитать {path}: {exc}"
 
     def write_file(self, path: str, content: str) -> str:
-        """Записать content в файл path целиком (создаёт директории при нужде).
-
-        Перезапись затирает прежнее содержимое — для точечной правки см. edit_file.
-        Returns: "OK: ..." при успехе, иначе текст ошибки.
-        """
+        """Записать content в файл path целиком (создаёт директории при нужде)."""
         try:
             safe = self._safe_path(path)
+
             parent = os.path.dirname(safe)
             if parent:
                 os.makedirs(parent, exist_ok=True)
+
             with open(safe, "w", encoding="utf-8") as f:
                 f.write(content)
+
             rel = os.path.relpath(safe, self.workdir)
             return f"OK: wrote {rel}"
+
         except ValueError as exc:
-            return f"ERROR: {exc}"
+            return f"Ошибка: {exc}"
         except OSError as exc:
-            return f"ERROR: could not write {path}: {exc}"
+            return f"Ошибка: не удалось записать {path}: {exc}"
 
     def edit_file(self, path: str, old: str, new: str) -> str:
-        """Заменить ровно одно вхождение old на new (как Edit в кодовых агентах).
-
-        Требует, чтобы old встречалась в файле дословно и ровно один раз.
-
-        Returns:
-            "OK: ..." при успехе, иначе текст ошибки (старая строка не найдена /
-            не уникальна / файл отсутствует).
-        """
+        """Заменить ровно одно вхождение old на new."""
         try:
             safe = self._safe_path(path)
+
             with open(safe, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
 
             n_matches = content.count(old)
+
             if n_matches == 0:
-                return "ERROR: old text not found"
+                return "Ошибка: старая строка не найдена"
+
             if n_matches > 1:
-                return f"ERROR: old text is not unique ({n_matches} matches)"
+                return f"Ошибка: старая строка не уникальна ({n_matches} совпадений)"
 
             updated = content.replace(old, new, 1)
+
             with open(safe, "w", encoding="utf-8") as f:
                 f.write(updated)
+
             rel = os.path.relpath(safe, self.workdir)
             return f"OK: edited {rel}"
+
         except FileNotFoundError:
-            return f"ERROR: file not found: {path}"
+            return f"Ошибка: файл не найден: {path}"
         except IsADirectoryError:
-            return f"ERROR: path is a directory: {path}"
+            return f"Ошибка: путь указывает на директорию: {path}"
         except ValueError as exc:
-            return f"ERROR: {exc}"
+            return f"Ошибка: {exc}"
         except OSError as exc:
-            return f"ERROR: could not edit {path}: {exc}"
+            return f"Ошибка: не удалось отредактировать {path}: {exc}"
 
     def list_files(self, subdir: str = "") -> str:
-        """Рекурсивно перечислить файлы в workdir (или в поддиректории subdir).
+        """Рекурсивно перечислить файлы в workdir (или в поддиректории subdir)."""
+        skip_dirs = {
+            "__pycache__",
+            ".git",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+        }
 
-        Возвращает относительные пути, по одному на строку (отсортированные).
-        Служебные директории (__pycache__, .git, .pytest_cache) пропускаются.
-        """
-        skip_dirs = {"__pycache__", ".git", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
         try:
             root = self._safe_path(subdir or "")
+
             if not os.path.exists(root):
-                return f"ERROR: directory not found: {subdir}"
+                return f"Ошибка: директория не найдена: {subdir}"
+
             if not os.path.isdir(root):
-                return f"ERROR: not a directory: {subdir}"
+                return f"Ошибка: это не директория: {subdir}"
 
             files: list[str] = []
+
             for current_root, dirnames, filenames in os.walk(root):
                 dirnames[:] = sorted(d for d in dirnames if d not in skip_dirs)
+
                 for filename in sorted(filenames):
                     full_path = os.path.join(current_root, filename)
                     rel_path = os.path.relpath(full_path, self.workdir)
                     files.append(rel_path.replace(os.sep, "/"))
+
             return "\n".join(sorted(files))
+
         except ValueError as exc:
-            return f"ERROR: {exc}"
+            return f"Ошибка: {exc}"
         except OSError as exc:
-            return f"ERROR: could not list files: {exc}"
+            return f"Ошибка: не удалось перечислить файлы: {exc}"
 
     def run_tests(self, target: str = "") -> str:
-        """Запустить pytest в рабочей директории и вернуть (усечённый) вывод.
-
-        Это «глаза» агента: даёт увидеть, какие тесты падают и почему (трейсбек).
-        Подсказка: `subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=...,
-        capture_output=True, text=True, timeout=...)`; длинный вывод обрежьте `_tail`.
-
-        Args:
-            target: опционально конкретный файл/папка с тестами относительно
-                workdir; по умолчанию запускаются все тесты.
-
-        Returns:
-            Строка вида "PASSED\\n..." или "FAILED\\n...<хвост вывода pytest>".
-        """
+        """Запустить pytest в рабочей директории и вернуть (усечённый) вывод."""
         try:
             cmd = [sys.executable, "-m", "pytest", "-q"]
+
             if target:
                 safe_target = self._safe_path(target)
                 if not os.path.exists(safe_target):
-                    return f"FAILED\nERROR: test target not found: {target}"
+                    return f"FAILED\nОшибка: test target не найден: {target}"
                 cmd.append(os.path.relpath(safe_target, self.workdir))
 
             completed = subprocess.run(
@@ -202,16 +191,28 @@ class FileTools:
                 text=True,
                 timeout=30,
             )
+
             output = (completed.stdout or "") + (completed.stderr or "")
             status = "PASSED" if completed.returncode == 0 else "FAILED"
+
             return f"{status}\n{_tail(output)}"
+
         except subprocess.TimeoutExpired as exc:
-            output = (exc.stdout or "") + (exc.stderr or "")
-            return f"FAILED\nERROR: pytest timed out\n{_tail(output)}"
+            stdout = exc.stdout or ""
+            stderr = exc.stderr or ""
+
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", errors="replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+
+            output = stdout + stderr
+            return f"FAILED\nОшибка: pytest timed out\n{_tail(output)}"
+
         except ValueError as exc:
-            return f"FAILED\nERROR: {exc}"
+            return f"FAILED\nОшибка: {exc}"
         except OSError as exc:
-            return f"FAILED\nERROR: could not run pytest: {exc}"
+            return f"FAILED\nОшибка: не удалось запустить pytest: {exc}"
 
 
 # JSON-схемы файловых инструментов (то, что уходит модели в system prompt).
