@@ -47,9 +47,6 @@ class LLMClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
-        # Накопленный расход токенов по всем вызовам chat() этого клиента.
-        # API возвращает usage в каждом ответе — суммируем, чтобы было видно,
-        # «сколько стоит» агент.
         self.total_usage = {
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -74,17 +71,7 @@ class LLMClient:
         }
 
     def chat(self, messages: list[dict]) -> str:
-        """Отправить messages модели и вернуть текст ответа ассистента.
-
-        Args:
-            messages: список сообщений вида {"role": ..., "content": ...}.
-                Допустимые роли — "system" / "user" / "assistant" (tool calling
-                мы делаем вручную через текстовые теги, поэтому роль "tool" не
-                используется — результат инструмента кладётся как user-сообщение).
-
-        Returns:
-            Текст из choices[0].message.content (пустая строка, если content == null).
-        """
+        """Отправить messages модели и вернуть текст ответа ассистента."""
         url = f"{self.base_url}/chat/completions"
         resp = requests.post(
             url,
@@ -94,58 +81,41 @@ class LLMClient:
         )
         resp.raise_for_status()
         data = resp.json()
+
         usage = data.get("usage") or {}
         for key in self.total_usage:
             self.total_usage[key] += usage.get(key, 0) or 0
         self.n_requests += 1
+
         return data["choices"][0]["message"]["content"] or ""
 
 
 def render_tools_system_prompt(tool_schemas: list[dict]) -> str:
-    """Собрать system prompt со списком инструментов (Qwen-style формат вызова).
-
-    System prompt должен содержать: JSON-схемы инструментов и инструкцию, что для
-    вызова инструмента нужно вернуть блок `<tool_call>{"name": ..., "arguments": ...}</tool_call>`,
-    а без вызова — ответить обычным текстом.
-
-    Args:
-        tool_schemas: список JSON-схем инструментов (формат OpenAI function:
-            {"type": "function", "function": {"name", "description", "parameters"}}).
-
-    Returns:
-        Готовый system prompt.
-    """
+    """Собрать system prompt со списком инструментов (Qwen-style формат вызова)."""
     tools_json = json.dumps(tool_schemas, ensure_ascii=False, indent=2)
     return (
-        "You are a helpful assistant that can use tools when needed.\n\n"
+        "Ты — ассистент с доступом к инструментам.\n\n"
         "# Tools\n"
-        "You may call one or more tools to help answer the user.\n"
-        "The available tools are described by the following JSON schemas:\n"
+        "Ты можешь вызвать один или несколько инструментов, если это нужно для ответа.\n"
+        "Доступные инструменты описаны JSON-схемами ниже:\n"
         "<tools>\n"
         f"{tools_json}\n"
         "</tools>\n\n"
-        "To call a tool, return a JSON object with the tool name and arguments "
-        "inside <tool_call></tool_call> XML tags. Use exactly this format:\n"
+        "Чтобы вызвать инструмент, верни JSON-объект с именем инструмента и "
+        "аргументами внутри XML-тегов <tool_call></tool_call>. "
+        "Используй ровно такой формат:\n"
         "<tool_call>\n"
         '{"name": "tool_name", "arguments": {}}\n'
         "</tool_call>\n\n"
-        "The `arguments` value must be a JSON object. If you need multiple tool "
-        "calls, return multiple <tool_call>...</tool_call> blocks.\n"
-        "If no tool is needed, answer the user directly with ordinary text and "
-        "do not include a <tool_call> block."
+        "Поле `arguments` всегда должно быть JSON-объектом. "
+        "Если нужно вызвать несколько инструментов, верни несколько блоков "
+        "<tool_call>...</tool_call> подряд.\n"
+        "Если инструмент не нужен, ответь обычным текстом без блока <tool_call>."
     )
 
 
 def parse_tool_calls(text: str) -> list[dict]:
-    """Найти все <tool_call>{...}</tool_call> в тексте модели и распарсить JSON.
-
-    Args:
-        text: ответ модели.
-
-    Returns:
-        Список dict вида {"name": ..., "arguments": {...}}. Блоки с невалидным
-        JSON нужно пропускать (а не падать).
-    """
+    """Найти все <tool_call>{...}</tool_call> в тексте модели и распарсить JSON."""
     calls: list[dict] = []
     for match in TOOL_CALL_RE.finditer(text):
         raw_json = match.group(1)
@@ -153,8 +123,10 @@ def parse_tool_calls(text: str) -> list[dict]:
             parsed = json.loads(raw_json)
         except json.JSONDecodeError:
             continue
+
         if isinstance(parsed, dict):
             calls.append(parsed)
+
     return calls
 
 
@@ -162,51 +134,43 @@ def execute_tool_calls(
     calls: list[dict],
     tools: dict[str, Callable[..., Any]],
 ) -> list[str]:
-    """Исполнить распарсенные tool call'ы и вернуть текстовые результаты.
-
-    Args:
-        calls: список вызовов из parse_tool_calls.
-        tools: реестр инструментов {имя: функция}.
-
-    Returns:
-        Список строк-результатов (по одной на каждый вызов). Ошибки (неизвестный
-        инструмент, неверные аргументы, исключение в инструменте) нужно возвращать
-        как текст, а не пробрасывать — чтобы модель могла их прочитать и исправиться.
-    """
+    """Исполнить распарсенные tool call'ы и вернуть текстовые результаты."""
     results: list[str] = []
 
     for call in calls:
         if not isinstance(call, dict):
-            results.append("ERROR: tool call must be a JSON object")
+            results.append("Ошибка: tool call должен быть JSON-объектом")
             continue
 
         name = call.get("name")
         arguments = call.get("arguments", {})
+
         if arguments is None:
             arguments = {}
 
         if not isinstance(name, str) or not name:
-            results.append("ERROR: tool call is missing a valid string field `name`")
+            results.append("Ошибка: в tool call отсутствует корректное поле `name`")
             continue
 
         if name not in tools:
-            results.append(f"ERROR: unknown tool: {name}")
+            results.append(f"Ошибка: неизвестный инструмент: {name}")
             continue
 
         if not isinstance(arguments, dict):
             results.append(
-                f"ERROR: arguments for tool `{name}` must be a JSON object"
+                f"Ошибка: arguments для инструмента `{name}` должен быть JSON-объектом"
             )
             continue
 
         try:
             result = tools[name](**arguments)
         except TypeError as exc:
-            results.append(f"ERROR: invalid arguments for tool `{name}`: {exc}")
+            results.append(f"Ошибка аргументов инструмента `{name}`: {exc}")
             continue
-        except Exception as exc:  # noqa: BLE001 - tool errors are returned to the model
+        except Exception as exc:
             results.append(
-                f"ERROR: tool `{name}` raised {type(exc).__name__}: {exc}"
+                f"Ошибка при выполнении инструмента `{name}` "
+                f"({type(exc).__name__}): {exc}"
             )
             continue
 
@@ -222,11 +186,7 @@ def execute_tool_calls(
 
 
 def wrap_tool_response(result: str) -> dict:
-    """Обернуть результат инструмента в сообщение для следующего хода модели.
-
-    Tool calling делаем вручную, поэтому результат возвращаем как user-сообщение
-    в обёртке <tool_response>...</tool_response> (так его ждёт chat template Qwen).
-    """
+    """Обернуть результат инструмента в сообщение для следующего хода модели."""
     return {
         "role": "user",
         "content": f"<tool_response>\n{result}\n</tool_response>",
@@ -243,22 +203,7 @@ def run_tool_loop(
     messages: list[dict] | None = None,
     verbose: bool = False,
 ) -> str:
-    """Цикл tool calling: модель -> парсинг -> исполнение -> ответ -> повтор.
-
-    Args:
-        client: LLMClient (или любой объект с .chat(messages) -> str).
-        user_msg: запрос пользователя.
-        tools: реестр инструментов {имя: функция}.
-        tool_schemas: JSON-схемы инструментов для system prompt.
-        max_steps: ограничитель числа итераций (защита от зацикливания).
-        system_extra: доп. инструкции, дописываются в конец system prompt.
-        messages: если передан — продолжаем существующий диалог (мутируется на
-            месте); иначе создаётся новый.
-        verbose: печатать ли шаги.
-
-    Returns:
-        Финальный текстовый ответ модели (без tool_call) либо сообщение о лимите шагов.
-    """
+    """Цикл tool calling: модель -> парсинг -> исполнение -> ответ -> повтор."""
     system_prompt = render_tools_system_prompt(tool_schemas)
     if system_extra:
         system_prompt = f"{system_prompt}\n\n{system_extra}"
@@ -269,8 +214,6 @@ def run_tool_loop(
             {"role": "user", "content": user_msg},
         ]
     else:
-        # Продолжаем переданный диалог и мутируем его на месте, как обещано
-        # в сигнатуре. Если системного сообщения нет, добавим его в начало.
         has_system = any(message.get("role") == "system" for message in messages)
         if not has_system:
             messages.insert(0, {"role": "system", "content": system_prompt})
@@ -279,6 +222,7 @@ def run_tool_loop(
 
     for step in range(max_steps):
         reply = client.chat(messages)
+
         if verbose:
             print(f"[assistant step {step + 1}] {reply}")
 
@@ -294,4 +238,4 @@ def run_tool_loop(
                 print(f"[tool response] {result}")
             messages.append(wrap_tool_response(result))
 
-    return f"ERROR: max_steps exceeded ({max_steps}) without final answer"
+    return f"Ошибка: достигнут лимит шагов ({max_steps}) без финального ответа"
