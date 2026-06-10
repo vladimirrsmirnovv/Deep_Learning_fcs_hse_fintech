@@ -115,7 +115,25 @@ def render_tools_system_prompt(tool_schemas: list[dict]) -> str:
     Returns:
         Готовый system prompt.
     """
-    raise NotImplementedError
+    tools_json = json.dumps(tool_schemas, ensure_ascii=False, indent=2)
+    return (
+        "You are a helpful assistant that can use tools when needed.\n\n"
+        "# Tools\n"
+        "You may call one or more tools to help answer the user.\n"
+        "The available tools are described by the following JSON schemas:\n"
+        "<tools>\n"
+        f"{tools_json}\n"
+        "</tools>\n\n"
+        "To call a tool, return a JSON object with the tool name and arguments "
+        "inside <tool_call></tool_call> XML tags. Use exactly this format:\n"
+        "<tool_call>\n"
+        '{"name": "tool_name", "arguments": {}}\n'
+        "</tool_call>\n\n"
+        "The `arguments` value must be a JSON object. If you need multiple tool "
+        "calls, return multiple <tool_call>...</tool_call> blocks.\n"
+        "If no tool is needed, answer the user directly with ordinary text and "
+        "do not include a <tool_call> block."
+    )
 
 
 def parse_tool_calls(text: str) -> list[dict]:
@@ -128,7 +146,16 @@ def parse_tool_calls(text: str) -> list[dict]:
         Список dict вида {"name": ..., "arguments": {...}}. Блоки с невалидным
         JSON нужно пропускать (а не падать).
     """
-    raise NotImplementedError
+    calls: list[dict] = []
+    for match in TOOL_CALL_RE.finditer(text):
+        raw_json = match.group(1)
+        try:
+            parsed = json.loads(raw_json)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            calls.append(parsed)
+    return calls
 
 
 def execute_tool_calls(
@@ -146,7 +173,52 @@ def execute_tool_calls(
         инструмент, неверные аргументы, исключение в инструменте) нужно возвращать
         как текст, а не пробрасывать — чтобы модель могла их прочитать и исправиться.
     """
-    raise NotImplementedError
+    results: list[str] = []
+
+    for call in calls:
+        if not isinstance(call, dict):
+            results.append("ERROR: tool call must be a JSON object")
+            continue
+
+        name = call.get("name")
+        arguments = call.get("arguments", {})
+        if arguments is None:
+            arguments = {}
+
+        if not isinstance(name, str) or not name:
+            results.append("ERROR: tool call is missing a valid string field `name`")
+            continue
+
+        if name not in tools:
+            results.append(f"ERROR: unknown tool: {name}")
+            continue
+
+        if not isinstance(arguments, dict):
+            results.append(
+                f"ERROR: arguments for tool `{name}` must be a JSON object"
+            )
+            continue
+
+        try:
+            result = tools[name](**arguments)
+        except TypeError as exc:
+            results.append(f"ERROR: invalid arguments for tool `{name}`: {exc}")
+            continue
+        except Exception as exc:  # noqa: BLE001 - tool errors are returned to the model
+            results.append(
+                f"ERROR: tool `{name}` raised {type(exc).__name__}: {exc}"
+            )
+            continue
+
+        if isinstance(result, str):
+            results.append(result)
+        else:
+            try:
+                results.append(json.dumps(result, ensure_ascii=False))
+            except TypeError:
+                results.append(str(result))
+
+    return results
 
 
 def wrap_tool_response(result: str) -> dict:
@@ -155,7 +227,10 @@ def wrap_tool_response(result: str) -> dict:
     Tool calling делаем вручную, поэтому результат возвращаем как user-сообщение
     в обёртке <tool_response>...</tool_response> (так его ждёт chat template Qwen).
     """
-    raise NotImplementedError
+    return {
+        "role": "user",
+        "content": f"<tool_response>\n{result}\n</tool_response>",
+    }
 
 
 def run_tool_loop(
@@ -184,4 +259,39 @@ def run_tool_loop(
     Returns:
         Финальный текстовый ответ модели (без tool_call) либо сообщение о лимите шагов.
     """
-    raise NotImplementedError
+    system_prompt = render_tools_system_prompt(tool_schemas)
+    if system_extra:
+        system_prompt = f"{system_prompt}\n\n{system_extra}"
+
+    if messages is None:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_msg},
+        ]
+    else:
+        # Продолжаем переданный диалог и мутируем его на месте, как обещано
+        # в сигнатуре. Если системного сообщения нет, добавим его в начало.
+        has_system = any(message.get("role") == "system" for message in messages)
+        if not has_system:
+            messages.insert(0, {"role": "system", "content": system_prompt})
+        if user_msg:
+            messages.append({"role": "user", "content": user_msg})
+
+    for step in range(max_steps):
+        reply = client.chat(messages)
+        if verbose:
+            print(f"[assistant step {step + 1}] {reply}")
+
+        messages.append({"role": "assistant", "content": reply})
+        calls = parse_tool_calls(reply)
+
+        if not calls:
+            return reply
+
+        results = execute_tool_calls(calls, tools)
+        for result in results:
+            if verbose:
+                print(f"[tool response] {result}")
+            messages.append(wrap_tool_response(result))
+
+    return f"ERROR: max_steps exceeded ({max_steps}) without final answer"
