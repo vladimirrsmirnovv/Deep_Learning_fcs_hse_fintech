@@ -68,4 +68,11 @@ class CodeAgent:
         инструменты (self.tools), их схемы (self.schemas), лимит шагов и
         AGENT_INSTRUCTIONS как system_extra.
         """
-        raise NotImplementedError
+        return run_tool_loop(
+            client=self.client,
+            user_msg=task,
+            tools=self.tools,
+            tool_schemas=self.schemas,
+            max_steps=self.max_steps,
+            system_extra=AGENT_INSTRUCTIONS,
+        )
